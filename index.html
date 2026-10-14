@@ -171,6 +171,7 @@ td.note{max-width:220px;overflow:hidden;text-overflow:ellipsis;color:var(--muted
 .msg.u{justify-self:end;background:var(--violet);color:#fff}
 .msg.a{justify-self:start;background:var(--field);border:1px solid var(--line)}
 .tvq{min-height:0;margin-bottom:6px}
+ol.steps{padding-left:20px;margin:0 0 16px;display:grid;gap:8px;font-size:13.5px}
 
 /* form */
 .formgrid{display:grid;gap:16px;grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -709,7 +710,7 @@ function viewAccounts(){
      '</div><div class="btnrow" style="margin-top:16px"><button class="btn" type="submit">Add account</button></div></form></section>';
   if(!(window.claude&&window.claude.use)){
     var hk=!!getKey();
-    o+='<section class="panel"><div class="panel-head"><div><h2>AI connection</h2><p class="sub">'+(hk?'A key is saved on this device. Screenshot import and AI Coach are on.':'Paste your own Anthropic API key to turn on screenshot import and AI Coach in this app.')+'</p></div></div>'+
+    o+='<section class="panel"><div class="panel-head"><div><h2>AI connection</h2><p class="sub">'+(hk?'A key is saved on this device. Screenshot import and AI Coach are on.':'Optional: paste your own Anthropic API key for one-tap AI. Without a key, use the copy and paste steps in AI Coach and Log trade.')+'</p></div></div>'+
       '<div class="btnrow"><input id="akey" type="password" autocomplete="off" placeholder="sk-ant-..." aria-label="Anthropic API key" style="flex:1;min-width:220px;background:var(--field);border:1px solid var(--line);border-radius:999px;padding:11px 18px"><button class="btn" id="aksave" type="button">Save key</button>'+(hk?'<button class="btn ghost" id="akdel" type="button">Remove key</button>':'')+'</div>'+
       '<div class="note-box">The key is stored only in this browser on this device and is sent only to Anthropic. Create a separate key at console.anthropic.com and set a monthly spend limit on it. Anyone who can open this browser’s data could read the key, so never reuse a key from other projects. Each screenshot or coach report uses a small amount of your API credit.</div></section>';
   }
@@ -909,7 +910,7 @@ function viewLog(){
   var fa=pf.acct||state.formAcct||(state.acctFilter!=='all'?state.acctFilter:state.accounts[0].id);
   var setups={};state.trades.forEach(function(t){if(t.setup)setups[t.setup]=1});
   ['Opening range breakout','VWAP reclaim','Gap and go','Pullback','Reversal','Liquidity sweep'].forEach(function(x){setups[x]=1});
-  var o='<section class="panel" style="margin-top:28px"><div class="panel-head"><div><h2>Import from screenshot</h2><p class="sub">Upload or paste a screenshot from Binance, Vantage, MT5 or TradingView. Claude reads it and fills the form below. Anything it can’t read stays highlighted for you to complete.</p></div></div>'+
+  var o=bridgeMode()?shotBridgePanel():'<section class="panel" style="margin-top:28px"><div class="panel-head"><div><h2>Import from screenshot</h2><p class="sub">Upload or paste a screenshot from Binance, Vantage, MT5 or TradingView. Claude reads it and fills the form below. Anything it can’t read stays highlighted for you to complete.</p></div></div>'+
    '<div class="drop" id="drop"><input type="file" id="shotfile" accept="image/*" hidden><button class="btn" type="button" id="shotbtn">Choose screenshot</button><span class="sub" id="shotstat">Or drag an image here, or paste one with Ctrl+V.</span><img id="shotthumb" class="thumb" alt="Screenshot preview" hidden></div><div id="shotout"></div></section>';
   o+='<section class="panel"><div class="panel-head"><div><h2>Log a trade</h2><p class="sub">Net P&amp;L, risk and R are calculated for you. Green fields were read from your screenshot.</p></div></div>'+
    '<form id="tf" autocomplete="off"><div class="formgrid">'+
@@ -998,6 +999,22 @@ function acctForPlatform(p){
   for(var i=0;i<state.accounts.length;i++)if((state.accounts[i].name+' '+state.accounts[i].kind).toLowerCase().indexOf(p)>=0)return state.accounts[i].id;
   return null;
 }
+function shotBridgePanel(){
+  return '<section class="panel" style="margin-top:28px"><div class="panel-head"><div><h2>Import from screenshot</h2><p class="sub">Use a Claude chat to read your screenshot, then paste the answer here. No API key or credits needed.</p></div></div>'+
+   '<ol class="steps"><li><b>Copy the instructions.</b></li><li><b>Open Claude</b>, start a new chat, attach your trade screenshot, paste the instructions, and send.</li><li><b>Copy Claude’s reply</b> and paste it below. The form fills in and anything missing is highlighted.</li></ol>'+
+   '<div class="btnrow"><button class="btn" type="button" id="shotcopy">Copy instructions</button></div><div id="shotfb"></div>'+
+   '<textarea id="shotpaste" placeholder="Paste Claude’s reply here" style="width:100%;min-height:100px;margin-top:14px;background:var(--field);border:1px solid var(--line);border-radius:12px;padding:12px;resize:vertical"></textarea>'+
+   '<div class="btnrow" style="margin-top:12px"><button class="btn ghost" type="button" id="shotread">Fill the form</button><span class="sub" id="shotstat"></span></div><div id="shotout"></div></section>';
+}
+function applyShotData(data){
+  var st=document.getElementById('shotstat');
+  var raw=data&&Array.isArray(data.trades)?data.trades:(Array.isArray(data)?data:[]);
+  var list=raw.slice(0,25).map(normShot).filter(function(t){return t.symbol||t.entry!=null||t.exit!=null});
+  var platform=data&&data.platform;
+  if(!list.length){st.textContent='I couldn’t find trade details in that. Try a clearer or cropped screenshot.';return}
+  if(list.length===1){fillFromShot(list[0],platform)}
+  else{shotList=list;st.textContent='Found '+list.length+' trades. Review them below.';showShotList(platform)}
+}
 function normShot(t){
   var sym=String(t.symbol||'').toUpperCase().replace(/[^A-Z0-9]/g,'')||null;
   var side=t.side==='long'||t.side==='short'?t.side:(String(t.side||'').toLowerCase()==='buy'?'long':String(t.side||'').toLowerCase()==='sell'?'short':null);
@@ -1031,12 +1048,7 @@ async function readShot(file){
     st.textContent='Reading screenshot…';
     var blob=await shrink(file);
     var data=await ai.json(shotPrompt(),{images:[blob],modelTier:'default'});
-    var raw=data&&Array.isArray(data.trades)?data.trades:(Array.isArray(data)?data:[]);
-    var list=raw.slice(0,25).map(normShot).filter(function(t){return t.symbol||t.entry!=null||t.exit!=null});
-    var platform=data&&data.platform;
-    if(!list.length){st.textContent='I couldn’t find trade details in that image. Try cropping to the position or order history.';return}
-    if(list.length===1){fillFromShot(list[0],platform)}
-    else{shotList=list;st.textContent='Found '+list.length+' trades. Review them below.';showShotList(platform)}
+    applyShotData(data);
   }catch(e){st.textContent=aiErr(e)}
 }
 function fillFromShot(t,platform){
@@ -1113,7 +1125,17 @@ function bindLog(){
     toast('Saved '+t.symbol+' '+signed(pnl(t)));
     var keep=t.date;state.tab='log';render();document.getElementById('fd').value=keep;document.getElementById('fs').focus();
   };
+  var scp=document.getElementById('shotcopy');
+  if(scp){
+    scp.onclick=function(){copyText(shotPrompt()+'\n\nThe screenshot is attached to this message.','shotfb')};
+    document.getElementById('shotread').onclick=function(){
+      var t=document.getElementById('shotpaste').value.trim(),st=document.getElementById('shotstat');
+      if(!t){st.textContent='Paste Claude’s reply first.';return}
+      try{applyShotData(parseJSONText(t))}catch(e){st.textContent='I couldn’t read that reply. Make sure you copied all of it, including the curly brackets.'}
+    };
+  }
   var drop=document.getElementById('drop'),fi=document.getElementById('shotfile');
+  if(!drop)return;
   document.getElementById('shotbtn').onclick=function(){fi.click()};
   fi.onchange=function(){if(fi.files&&fi.files[0])readShot(fi.files[0]);fi.value=''};
   drop.ondragover=function(e){e.preventDefault();drop.classList.add('over')};
@@ -1189,16 +1211,52 @@ function reportHTML(d,meta){
   return o+'<p class="sub">AI feedback is for education and journaling, not financial advice.</p></div>';
 }
 function viewCoach(){
-  var ts=filtered(),c=state.coach;
-  var o='<section class="panel" style="margin-top:28px"><div class="panel-head"><div><h2>AI Coach</h2><p class="sub">Claude reviews your journal like a trading coach: what is working, where you leak money, how well you follow your risk rules, and what to test next.</p></div></div>'+
-   '<div class="btnrow"><button class="btn" id="cgo">Analyse my trades</button><button class="btn ghost" id="cstop" hidden>Stop</button><span class="sub">'+ts.length+' trades in scope: '+esc(scopeText())+'. Change the account or range at the top to analyse a different slice.</span></div>'+
-   '<div id="cstat" class="sub" style="margin-top:12px"></div><div id="creport" style="margin-top:18px">'+(c&&c.data?reportHTML(c.data,'Generated '+new Date(c.at).toLocaleString()+' for '+c.scope+'.'):'')+'</div></section>';
-  o+='<section class="panel"><div class="panel-head"><div><h2>Ask about your trades</h2><p class="sub">For example: “Why am I losing on Fridays?”, “Is my gold trading worth the risk?”, or “What should my max daily loss be?”</p></div></div>'+
-   '<div class="chatlog" id="chatlog">'+chat.map(function(m){return '<div class="msg '+(m.role==='user'?'u':'a')+'">'+esc(m.content)+'</div>'}).join('')+'</div>'+
-   '<div class="btnrow"><input id="cq" style="flex:1;min-width:200px;background:var(--field);border:1px solid var(--line);border-radius:999px;padding:11px 18px" placeholder="Ask your coach" maxlength="600" aria-label="Ask your coach"><button class="btn" id="csend">Send</button></div></section>';
+  var ts=filtered(),c=state.coach,br=bridgeMode();
+  var rp=c&&c.data?reportHTML(c.data,'Generated '+new Date(c.at).toLocaleString()+' for '+c.scope+'.'):'';
+  var o='<section class="panel" style="margin-top:28px"><div class="panel-head"><div><h2>AI Coach</h2><p class="sub">Claude reviews your journal like a trading coach: what is working, where you leak money, how well you follow your risk rules, and what to test next.</p></div></div>';
+  if(br){
+    o+='<ol class="steps"><li><b>Copy your summary.</b> It holds your stats, breakdowns and recent trades for '+esc(scopeText())+'.</li><li><b>Open Claude</b>, start a new chat, paste it, and send.</li><li><b>Copy Claude’s whole reply</b> and paste it below to see it as a report. Ask follow-up questions in the same Claude chat.</li></ol>'+
+     '<div class="btnrow"><button class="btn" id="cbcopy">Copy summary for Claude</button><span class="sub">'+ts.length+' trades in scope. Change the account or range at the top for a different slice.</span></div><div id="cbfb"></div>'+
+     '<textarea id="cbpaste" placeholder="Paste Claude’s reply here" style="width:100%;min-height:110px;margin-top:14px;background:var(--field);border:1px solid var(--line);border-radius:12px;padding:12px;resize:vertical"></textarea>'+
+     '<div class="btnrow" style="margin-top:12px"><button class="btn ghost" id="cbshow">Show report</button></div><div id="cstat" class="sub" style="margin-top:12px"></div>';
+  }else{
+    o+='<div class="btnrow"><button class="btn" id="cgo">Analyse my trades</button><button class="btn ghost" id="cstop" hidden>Stop</button><span class="sub">'+ts.length+' trades in scope: '+esc(scopeText())+'. Change the account or range at the top to analyse a different slice.</span></div><div id="cstat" class="sub" style="margin-top:12px"></div>';
+  }
+  o+='<div id="creport" style="margin-top:18px">'+rp+'</div></section>';
+  if(!br){
+    o+='<section class="panel"><div class="panel-head"><div><h2>Ask about your trades</h2><p class="sub">For example: “Why am I losing on Fridays?”, “Is my gold trading worth the risk?”, or “What should my max daily loss be?”</p></div></div>'+
+     '<div class="chatlog" id="chatlog">'+chat.map(function(m){return '<div class="msg '+(m.role==='user'?'u':'a')+'">'+esc(m.content)+'</div>'}).join('')+'</div>'+
+     '<div class="btnrow"><input id="cq" style="flex:1;min-width:200px;background:var(--field);border:1px solid var(--line);border-radius:999px;padding:11px 18px" placeholder="Ask your coach" maxlength="600" aria-label="Ask your coach"><button class="btn" id="csend">Send</button></div></section>';
+  }
   return o;
 }
+function coachPrompt(ctx){
+  return COACH_RULES+'\n\nJOURNAL DATA\n'+ctx+'\n\nWrite your review. Reply with ONLY one JSON object in exactly this shape:\n'+
+   '{"grade":"A"|"B"|"C"|"D"|"F","headline":"one sentence verdict","confidence":"low"|"medium"|"high",'+
+   '"strengths":[{"title":"","detail":""}],"leaks":[{"title":"","detail":"","cost":"approx $ or R impact if you can estimate it from the data"}],'+
+   '"risk":[{"title":"","detail":""}],"psychology":[{"title":"","detail":""}],'+
+   '"experiments":[{"rule":"a concrete rule to test","why":"","measure":"how to judge it after 20 trades"}],"next_week":["short action"]}\n'+
+   'Limits: 2 to 4 items per list, each detail at most 2 sentences with numbers from the data. The grade judges process and risk discipline, not just profit.';
+}
+function bridgeMode(){return !(window.claude&&window.claude.use)&&!getKey()}
+function copyText(text,fbId){
+  var done=function(){toast('Copied. Now paste it into Claude.')};
+  var fb=function(){var el=document.getElementById(fbId);if(!el)return;el.innerHTML='<p class="sub" style="margin-top:12px">Copying was blocked. Select all the text below, copy it, then paste it into Claude.</p><textarea readonly style="width:100%;min-height:140px;background:var(--field);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:6px"></textarea>';var ta=el.querySelector('textarea');ta.value=text;ta.focus();ta.select()};
+  try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(done,fb);return}}catch(e){}
+  fb();
+}
 function bindCoach(){
+  var cbc=document.getElementById('cbcopy');
+  if(cbc){
+    cbc.onclick=function(){if(filtered().length<5){toast('Log at least 5 trades in this scope first');return}copyText(coachPrompt(buildContext()),'cbfb')};
+    document.getElementById('cbshow').onclick=function(){
+      var t=document.getElementById('cbpaste').value.trim(),stat=document.getElementById('cstat'),rp=document.getElementById('creport');
+      if(!t){stat.textContent='Paste Claude’s reply first.';return}
+      try{var d=parseJSONText(t);state.coach={at:Date.now(),scope:scopeText(),data:d};persist();rp.innerHTML=reportHTML(d,'Generated '+new Date().toLocaleString()+' for '+scopeText()+'.');stat.textContent=''}
+      catch(e){rp.innerHTML='<div class="msg a">'+esc(t)+'</div>';stat.textContent='That reply wasn’t in report format, so it is shown as plain text.'}
+    };
+    return;
+  }
   var go1=document.getElementById('cgo');if(!go1)return;
   var stat=document.getElementById('cstat'),rep=document.getElementById('creport'),stop=document.getElementById('cstop');
   go1.onclick=async function(){
@@ -1206,12 +1264,7 @@ function bindCoach(){
     if(!ai){stat.textContent=aiMissing();return}
     if(filtered().length<5){stat.textContent='Log at least 5 trades in this scope first. Load sample data on the Log trade tab to try it.';return}
     var ctx=buildContext(),scope=scopeText();
-    var prompt=COACH_RULES+'\n\nJOURNAL DATA\n'+ctx+'\n\nWrite your review. Reply with ONLY one JSON object in exactly this shape:\n'+
-     '{"grade":"A"|"B"|"C"|"D"|"F","headline":"one sentence verdict","confidence":"low"|"medium"|"high",'+
-     '"strengths":[{"title":"","detail":""}],"leaks":[{"title":"","detail":"","cost":"approx $ or R impact if you can estimate it from the data"}],'+
-     '"risk":[{"title":"","detail":""}],"psychology":[{"title":"","detail":""}],'+
-     '"experiments":[{"rule":"a concrete rule to test","why":"","measure":"how to judge it after 20 trades"}],"next_week":["short action"]}\n'+
-     'Limits: 2 to 4 items per list, each detail at most 2 sentences with numbers from the data. The grade judges process and risk discipline, not just profit.';
+    var prompt=coachPrompt(ctx);
     go1.disabled=true;stop.hidden=false;stat.textContent='Thinking…';coachCtl=new AbortController();
     try{
       var d=await ai.json(prompt,{signal:coachCtl.signal,modelTier:'complex',cache:false});
